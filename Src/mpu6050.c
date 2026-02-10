@@ -3687,11 +3687,11 @@ bool MPU6050_WriteDMPConfigurationSet(MPU6050_t *dev, const uint8_t *data, uint1
     if (useProgMem) free(progBuffer);
     return true;
 }
-*/
 
 bool MPU6050_WriteProgDMPConfigurationSet(MPU6050_t *dev, const uint8_t *data, uint16_t dataSize) {
     return MPU6050_WriteDMPConfigurationSet(dev, data, dataSize, true);
 }
+*/
 
 uint8_t MPU6050_GetDMPConfig1(MPU6050_t *dev) {
     uint8_t config;
