@@ -52,7 +52,7 @@ typedef struct {
     I2C_HandleTypeDef *I2Cx;
     uint8_t addr;
 
-    uint8_t dev_id;
+    uint8_t id;
 
     struct Resolution {
         float acc;
@@ -333,6 +333,7 @@ uint16_t MPU6050_GetFIFOCount(MPU6050_t *dev);
 uint8_t MPU6050_GetFIFOByte(MPU6050_t *dev);
 void MPU6050_SetFIFOByte(MPU6050_t *dev, uint8_t data);
 void MPU6050_GetFIFOBytes(MPU6050_t *dev, uint8_t *data, uint8_t length);
+int8_t MPU6050_GetCurrentFIFOPacket(MPU6050_t *dev, uint8_t *data, uint8_t length);
 
 // WHO_AM_I register
 uint8_t MPU6050_GetDeviceID(MPU6050_t *dev);
@@ -426,10 +427,10 @@ void MPU6050_SetMemoryStartAddress(MPU6050_t *dev, uint8_t address);
 uint8_t MPU6050_ReadMemoryByte(MPU6050_t *dev);
 void MPU6050_WriteMemoryByte(MPU6050_t *dev, uint8_t data);
 void MPU6050_ReadMemoryBlock(MPU6050_t *dev, uint8_t *data, uint16_t dataSize, uint8_t bank, uint8_t address);
-/*
+
 bool MPU6050_WriteMemoryBlock(MPU6050_t *dev, const uint8_t *data, uint16_t dataSize, uint8_t bank, uint8_t address, bool verify, bool useProgMem);
 bool MPU6050_WriteProgMemoryBlock(MPU6050_t *dev, const uint8_t *data, uint16_t dataSize, uint8_t bank, uint8_t address, bool verify);
-
+/*
 bool MPU6050_WriteDMPConfigurationSet(MPU6050_t *dev, const uint8_t *data, uint16_t dataSize, bool useProgMem);
 bool MPU6050_WriteProgDMPConfigurationSet(MPU6050_t *dev, const uint8_t *data, uint16_t dataSize);
 */
@@ -443,5 +444,14 @@ uint8_t MPU6050_GetDMPConfig2(MPU6050_t *dev);
 void MPU6050_SetDMPConfig2(MPU6050_t *dev, uint8_t config);
 
 MPU6050_Status MPU6050_AverageCalibration(MPU6050_t *dev);
+
+typedef struct {
+    float w;
+    float x;
+    float y;
+    float z;
+} Quaternion;
+
+void MPU6050_DMPGetQuaternion(Quaternion *q, const uint8_t* packet);
 
 #endif

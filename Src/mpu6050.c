@@ -164,6 +164,19 @@ inline HAL_StatusTypeDef I2C_WriteWord(I2C_HandleTypeDef *I2Cx, uint8_t dev_addr
     return HAL_I2C_Mem_Write(I2Cx, dev_addr, reg_addr, 1, data, 2, HAL_MAX_DELAY);
 }
 
+/** Write multiple bytes to an 8-bit device register.
+ * @param dev_addr I2C slave device address
+ * @param reg_addr First register address to write to
+ * @param length Number of bytes to write
+ * @param pData Buffer to copy new data from
+ * @return Status of operation (true = success)
+ */
+inline uint16_t I2C_WriteBytes(I2C_HandleTypeDef *I2Cx, uint8_t dev_addr, uint8_t reg_addr, uint8_t length, uint8_t* pData)
+{
+    HAL_StatusTypeDef status = HAL_I2C_Mem_Write(I2Cx, dev_addr << 1, reg_addr, I2C_MEMADD_SIZE_8BIT, pData, length, HAL_MAX_DELAY);
+    return status == HAL_OK;
+}
+
 /**
  *******************************************************************************************************
  ********************************* MPU6050 SUPPORT FUNCTIONS *******************************************
@@ -670,6 +683,21 @@ uint8_t MPU6050_GetMotionDetectionDuration(MPU6050_t *dev) {
  */
 void MPU6050_SetMotionDetectionDuration(MPU6050_t *dev, uint8_t duration) {
     I2C_WriteByte(dev->I2Cx, dev->addr, MPU6050_RA_MOT_DUR, duration);
+}
+
+uint8_t MPU6050_GetZeroMotionDetectionThreshold(MPU6050_t *dev) {
+    uint8_t threshold;
+    I2C_ReadByte(dev->I2Cx, dev->addr, MPU6050_RA_ZRMOT_THR, &threshold);
+    return threshold;
+}
+
+/** Set zero motion detection event acceleration threshold.
+ * @param threshold New zero motion detection acceleration threshold value (LSB = 2mg)
+ * @see getZeroMotionDetectionThreshold()
+ * @see MPU6050_RA_ZRMOT_THR
+ */
+void MPU6050_SetZeroMotionDetectionThreshold(MPU6050_t *dev, uint8_t threshold) {
+    I2C_WriteByte(dev->I2Cx, dev->addr, MPU6050_RA_ZRMOT_THR, threshold);
 }
 
 /** Get zero motion detection event duration threshold.
@@ -3214,6 +3242,53 @@ void MPU6050_GetFIFOBytes(MPU6050_t *dev, uint8_t *data, uint8_t length) {
         *data = 0;
 }
 
+/** Get latest byte from FIFO buffer no matter how much time has passed.
+ * ===                  GetCurrentFIFOPacket                    ===
+ * ================================================================
+ * Returns 1) when nothing special was done
+ *         2) when recovering from overflow
+ *         0) when no valid data is available
+ * ================================================================ */
+int8_t MPU6050_GetCurrentFIFOPacket(MPU6050_t *dev, uint8_t *data, uint8_t length) { // overflow proof
+    uint16_t fifoC = 0;
+    // This section of code is for when we allowed more than 1 packet to be acquired
+    bool packetReceived = false;
+    do {
+        printf("%d, %d \r\n", fifoC, packetReceived);
+        if ((fifoC = MPU6050_GetFIFOCount(dev)) > length) {
+            printf("%d, %d \r\n", fifoC, packetReceived);
+            // if (fifoC > 200) { // if you waited to get the FIFO buffer to > 200 bytes it will take longer to get the last packet in the FIFO Buffer than it will take to  reset the buffer and wait for the next to arrive
+            //     MPU6050_ResetFIFO(dev); // Fixes any overflow corruption
+            //     fifoC = 0;
+            //     while (!((fifoC = MPU6050_GetFIFOCount(dev)))); // Get Next New Packet
+            // }
+            // else { //We have more than 1 packet but less than 200 bytes of data in the FIFO Buffer
+                 uint8_t Trash[I2CDEVLIB_WIRE_BUFFER_LENGTH];
+                 while ((fifoC = MPU6050_GetFIFOCount(dev)) > length) {  // Test each time just in case the MPU is writing to the FIFO Buffer
+                     printf("%d, %d \r\n", fifoC, packetReceived);
+                     fifoC = fifoC - length; // Save the last packet
+                     uint16_t  RemoveBytes;
+                     while (fifoC) { // fifo count will reach zero so this is safe
+                         RemoveBytes = (fifoC < I2CDEVLIB_WIRE_BUFFER_LENGTH) ? fifoC : I2CDEVLIB_WIRE_BUFFER_LENGTH; // Buffer Length is different than the packet length this will efficiently clear the buffer
+                         MPU6050_GetFIFOBytes(dev, Trash, (uint8_t)RemoveBytes);
+                         fifoC -= RemoveBytes;
+                     }
+                 }
+            // }
+        }
+        if (!fifoC)
+            return 0; // Called too early no data, or we timed out after FIFO Reset
+        // We have 1 packet
+        packetReceived = fifoC == length;
+        if (!packetReceived)
+            return 0;
+        printf("%d, %d \r\n", fifoC, packetReceived);
+    } while (!packetReceived);
+    MPU6050_GetFIFOBytes(dev, data, length); //Get 1 packet
+    printf("%d, %d \r\n", fifoC, packetReceived);
+    return 1;
+}
+
 /** Get Device ID.
  * This register is used to verify the identity of the device (0b110100, 0x34).
  * @param dev MPU6050 device configuration
@@ -3223,9 +3298,8 @@ void MPU6050_GetFIFOBytes(MPU6050_t *dev, uint8_t *data, uint8_t length) {
  * @see MPU6050_WHO_AM_I_LENGTH
  */
 uint8_t MPU6050_GetDeviceID(MPU6050_t *dev) {
-    uint8_t data;
-    I2C_ReadBits(dev->I2Cx, dev->addr, MPU6050_RA_WHO_AM_I, MPU6050_WHO_AM_I_BIT, MPU6050_WHO_AM_I_LENGTH, &data);
-    return data;
+    I2C_ReadBits(dev->I2Cx, dev->addr, MPU6050_RA_WHO_AM_I, MPU6050_WHO_AM_I_BIT, MPU6050_WHO_AM_I_LENGTH, &dev->id);
+    return dev->id;
 }
 /** Set Device ID.
  * Write a new ID into the WHO_AM_I register (no idea why this should ever be necessary though).
@@ -3359,14 +3433,11 @@ void MPU6050_SetZGyroOffset(MPU6050_t *dev, int16_t offset) {
 void MPU6050_GetOffset(MPU6050_t *dev, int16_t *offset) {
     uint8_t data[2];
 
-    uint8_t reg_addr = ((MPU6050_GetDeviceID(dev) < 0x38 ) ? MPU6050_RA_XA_OFFS_H : MPU6050_RA_XA_OFFS_USRH);
-    I2C_ReadBytes(dev->I2Cx, dev->addr, reg_addr, 2, data);
+    I2C_ReadBytes(dev->I2Cx, dev->addr, MPU6050_RA_XA_OFFS_H, 2, data);
     offset[0] = (int16_t)((data[0] << 8) | data[1]);
-    reg_addr = ((MPU6050_GetDeviceID(dev) < 0x38 ) ? MPU6050_RA_YA_OFFS_H : MPU6050_RA_YA_OFFS_USRH);
-    I2C_ReadBytes(dev->I2Cx, dev->addr, reg_addr, 2, data);
+    I2C_ReadBytes(dev->I2Cx, dev->addr, MPU6050_RA_XA_OFFS_H, 2, data);
     offset[1] = (int16_t)((data[0] << 8) | data[1]);
-    reg_addr = ((MPU6050_GetDeviceID(dev) < 0x38 ) ? MPU6050_RA_ZA_OFFS_H : MPU6050_RA_ZA_OFFS_USRH);
-    I2C_ReadBytes(dev->I2Cx, dev->addr, reg_addr, 2, data);
+    I2C_ReadBytes(dev->I2Cx, dev->addr, MPU6050_RA_XA_OFFS_H, 2, data);
     offset[2] = (int16_t)((data[0] << 8) | data[1]);
 
     I2C_ReadBytes(dev->I2Cx, dev->addr, MPU6050_RA_XG_OFFS_USRH, 2, data);
@@ -3378,12 +3449,9 @@ void MPU6050_GetOffset(MPU6050_t *dev, int16_t *offset) {
 }
 
 void MPU6050_SetOffset(MPU6050_t *dev, int16_t *offset) {
-    uint8_t reg_addr = ((MPU6050_GetDeviceID(dev) < 0x38 ) ? MPU6050_RA_XA_OFFS_H : MPU6050_RA_XA_OFFS_USRH);
-    I2C_WriteWord(dev->I2Cx, dev->addr, reg_addr, offset[0]);
-    reg_addr = ((MPU6050_GetDeviceID(dev) < 0x38 ) ? MPU6050_RA_YA_OFFS_H : MPU6050_RA_YA_OFFS_USRH);
-    I2C_WriteWord(dev->I2Cx, dev->addr, reg_addr, offset[1]);
-    reg_addr = ((MPU6050_GetDeviceID(dev) < 0x38 ) ? MPU6050_RA_ZA_OFFS_H : MPU6050_RA_ZA_OFFS_USRH);
-    I2C_WriteWord(dev->I2Cx, dev->addr, reg_addr, offset[2]);
+    I2C_WriteWord(dev->I2Cx, dev->addr, MPU6050_RA_XA_OFFS_H, offset[0]);
+    I2C_WriteWord(dev->I2Cx, dev->addr, MPU6050_RA_YA_OFFS_H, offset[1]);
+    I2C_WriteWord(dev->I2Cx, dev->addr, MPU6050_RA_ZA_OFFS_H, offset[2]);
 
     I2C_WriteWord(dev->I2Cx, dev->addr, MPU6050_RA_XG_OFFS_USRH, offset[3]);
     I2C_WriteWord(dev->I2Cx, dev->addr, MPU6050_RA_YG_OFFS_USRH, offset[4]);
@@ -3498,7 +3566,6 @@ void MPU6050_WriteMemoryByte(MPU6050_t *dev, uint8_t data) {
     I2C_WriteByte(dev->I2Cx, dev->addr, MPU6050_RA_MEM_R_W, data);
 }
 
-/*
 void MPU6050_ReadMemoryBlock(MPU6050_t *dev, uint8_t *data, uint16_t dataSize, uint8_t bank, uint8_t address) {
     MPU6050_SetMemoryBank(dev, bank, false, false);
     MPU6050_SetMemoryStartAddress(dev, address);
@@ -3539,8 +3606,10 @@ bool MPU6050_WriteMemoryBlock(MPU6050_t *dev, const uint8_t *data, uint16_t data
     uint8_t *progBuffer;
     uint16_t i;
     uint8_t j;
-    if (verify) verifyBuffer = (uint8_t *)malloc(MPU6050_DMP_MEMORY_CHUNK_SIZE);
-    if (useProgMem) progBuffer = (uint8_t *)malloc(MPU6050_DMP_MEMORY_CHUNK_SIZE);
+    if (verify)
+        verifyBuffer = (uint8_t *)malloc(MPU6050_DMP_MEMORY_CHUNK_SIZE);
+    if (useProgMem)
+        progBuffer = (uint8_t *)malloc(MPU6050_DMP_MEMORY_CHUNK_SIZE);
     for (i = 0; i < dataSize;) {
         // determine correct chunk size according to bank position and data size
         chunkSize = MPU6050_DMP_MEMORY_CHUNK_SIZE;
@@ -3553,7 +3622,8 @@ bool MPU6050_WriteMemoryBlock(MPU6050_t *dev, const uint8_t *data, uint16_t data
 
         if (useProgMem) {
             // write the chunk of data as specified
-            for (j = 0; j < chunkSize; j++) progBuffer[j] = pgm_read_byte(data + i + j);
+            for (j = 0; j < chunkSize; j++)
+                progBuffer[j] = pgm_read_byte(data + i + j);
         } else {
             // write the chunk of data as specified
             progBuffer = (uint8_t *)data + i;
@@ -3567,23 +3637,6 @@ bool MPU6050_WriteMemoryBlock(MPU6050_t *dev, const uint8_t *data, uint16_t data
             MPU6050_SetMemoryStartAddress(dev, address);
             I2C_ReadBytes(dev->I2Cx, dev->addr, MPU6050_RA_MEM_R_W, chunkSize, verifyBuffer);
             if (memcmp(progBuffer, verifyBuffer, chunkSize) != 0) {
-                printf("Block write verification error, bank ");
-                printf(bank, DEC);
-                printf(", address ");
-                printf(address, DEC);
-                printf("!\nExpected:");
-                for (j = 0; j < chunkSize; j++) {
-                    printf(" 0x");
-                    if (progBuffer[j] < 16) Serial.print("0");
-                    printf(progBuffer[j], HEX);
-                }
-                printf("\nReceived:");
-                for (uint8_t j = 0; j < chunkSize; j++) {
-                    printf(" 0x");
-                    if (verifyBuffer[i + j] < 16) Serial.print("0");
-                    printf(verifyBuffer[i + j], HEX);
-                }
-                printf("\n");
                 free(verifyBuffer);
                 if (useProgMem) free(progBuffer);
                 return false; // uh oh.
@@ -3612,6 +3665,7 @@ bool MPU6050_WriteProgMemoryBlock(MPU6050_t *dev, const uint8_t *data, uint16_t 
     return MPU6050_WriteMemoryBlock(dev, data, dataSize, bank, address, verify, true);
 }
 
+/*
 bool MPU6050_WriteDMPConfigurationSet(MPU6050_t *dev, const uint8_t *data, uint16_t dataSize, bool useProgMem) {
     uint8_t *progBuffer, success, special;
     uint16_t i, j;
@@ -3792,4 +3846,11 @@ MPU6050_Status MPU6050_AverageCalibration(MPU6050_t *dev) {
     MPU6050_SetFullScaleAccelRange(dev, acc_fs);
     MPU6050_SetFullScaleGyroRange(dev, gyr_fs);
     return MPU6050_FAILED;
+}
+
+void MPU6050_DMPGetQuaternion(Quaternion *q, const uint8_t* packet) {
+    q->w = (float)((int16_t)((packet[0] << 8) | packet[1])) / 16384.0f;
+    q->x = (float)((int16_t)((packet[4] << 8) | packet[5])) / 16384.0f;
+    q->y = (float)((int16_t)((packet[8] << 8) | packet[9])) / 16384.0f;
+    q->z = (float)((int16_t)((packet[12] << 8) | packet[13])) / 16384.0f;
 }
